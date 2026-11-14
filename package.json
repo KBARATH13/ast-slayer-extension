@@ -1,0 +1,52 @@
+{
+  "name": "ast-slayer",
+  "displayName": "AST Slayer",
+  "description": "Transparent AST-based token optimization and telemetry mirror for Antigravity IDE",
+  "version": "1.0.0",
+  "publisher": "barath",
+  "icon": "icon.png",
+  "readme": "README.md",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KBARATH13/antigravity-ast-slayer"
+  },
+  "engines": {
+    "vscode": "^1.107.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./build/extension.js",
+  "type": "module",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ast-slayer.showStats",
+        "title": "AST Slayer: View Telemetry & Token Savings"
+      }
+    ],
+    "statusbar": [
+      {
+        "id": "ast-slayer.status",
+        "alignment": "right",
+        "priority": 100
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc --noEmit",
+    "build": "esbuild src/index.ts --bundle --format=esm --platform=node --target=node18 --external:vscode --outfile=build/index.js && esbuild src/extension.ts --bundle --format=esm --platform=node --target=node18 --external:vscode --outfile=build/extension.js",
+    "package": "vsce package --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.15.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.0.0"
+  }
+}

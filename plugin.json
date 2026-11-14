@@ -1,0 +1,9 @@
+{
+  "name": "ast-slayer",
+  "version": "1.0.0",
+  "description": "AST structural compression, status bar token telemetry, and file decorations for Antigravity IDE.",
+  "mcpConfig": "./mcp_config.json",
+  "rules": [
+    "./rules/tokenslayer-policy.md"
+  ]
+}
