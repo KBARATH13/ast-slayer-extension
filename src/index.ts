@@ -2,34 +2,70 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 
-/**
- * Path to the centralized AST Slayer telemetry ledger file in the user's home directory.
- */
 export const STATS_FILE: string = path.join(
   os.homedir() || process.env.USERPROFILE || process.env.HOME || '.',
   '.antigravity-ast-slayer-stats.jsonl'
 );
 
-/**
- * Set of supported file extensions analyzed by AST Slayer.
- */
 export const SUPPORTED_EXTENSIONS = new Set<string>([
   '.ts',
   '.tsx',
   '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.py',
+  '.java',
+  '.kt',
+  '.kts',
   '.dart',
   '.sol',
+  '.go',
+  '.rs',
+  '.c',
+  '.cpp',
+  '.h',
+  '.hpp',
+  '.cs',
+  '.php',
+  '.rb',
+  '.swift',
+  '.html',
+  '.htm',
+  '.css',
+  '.scss',
+  '.sass',
+  '.less',
+  '.vue',
+  '.svelte',
   '.json',
+  '.jsonc',
+  '.yaml',
+  '.yml',
+  '.toml',
+  '.xml',
+  '.sql',
+  '.graphql',
+  '.gql',
   '.md',
+  '.mdx',
+  '.sh',
+  '.bash',
+  '.ps1',
+  '.bat',
 ]);
 
 export interface TelemetryRecord {
   timestamp: string;
   file: string;
-  language: string;
-  rawTokens: number;
-  optimizedTokens: number;
-  saved: number;
+  language?: string;
+  rawTokens?: number;
+  optimizedTokens?: number;
+  saved?: number;
+  cacheHit?: boolean;
+  excluded?: boolean;
+  severity?: 'HIGH';
+  rule?: string;
 }
 
 export interface OptimizationResult {
@@ -49,143 +85,263 @@ export interface TelemetrySummary {
   totalSavedTokens: number;
   averageReductionPct: string;
   fileCount: number;
+  cacheHitCount: number;
+  cacheHitPct: string;
+  excludedFiles: number;
 }
 
-/**
- * Checks whether a given file path is supported by AST Slayer based on its extension.
- */
+const LANGUAGE_BY_EXTENSION: Record<string, string> = {
+  '.ts': 'typescript',
+  '.tsx': 'typescriptreact',
+  '.js': 'javascript',
+  '.jsx': 'javascriptreact',
+  '.mjs': 'javascript',
+  '.cjs': 'javascript',
+  '.py': 'python',
+  '.java': 'java',
+  '.kt': 'kotlin',
+  '.kts': 'kotlin',
+  '.dart': 'dart',
+  '.sol': 'solidity',
+  '.go': 'go',
+  '.rs': 'rust',
+  '.c': 'c',
+  '.cpp': 'cpp',
+  '.h': 'c',
+  '.hpp': 'cpp',
+  '.cs': 'csharp',
+  '.php': 'php',
+  '.rb': 'ruby',
+  '.swift': 'swift',
+  '.html': 'html',
+  '.htm': 'html',
+  '.css': 'css',
+  '.scss': 'scss',
+  '.sass': 'sass',
+  '.less': 'less',
+  '.vue': 'vue',
+  '.svelte': 'svelte',
+  '.json': 'json',
+  '.jsonc': 'jsonc',
+  '.yaml': 'yaml',
+  '.yml': 'yaml',
+  '.toml': 'toml',
+  '.xml': 'xml',
+  '.sql': 'sql',
+  '.graphql': 'graphql',
+  '.gql': 'graphql',
+  '.md': 'markdown',
+  '.mdx': 'mdx',
+  '.sh': 'shellscript',
+  '.bash': 'shellscript',
+  '.ps1': 'powershell',
+  '.bat': 'bat',
+};
+
+const C_STYLE_LANGUAGES = new Set([
+  'typescript',
+  'typescriptreact',
+  'javascript',
+  'javascriptreact',
+  'java',
+  'kotlin',
+  'dart',
+  'solidity',
+  'go',
+  'rust',
+  'c',
+  'cpp',
+  'csharp',
+  'php',
+  'swift',
+  'css',
+  'scss',
+  'sass',
+  'less',
+  'vue',
+  'svelte',
+  'graphql',
+]);
+const HASH_COMMENT_LANGUAGES = new Set([
+  'python',
+  'ruby',
+  'shellscript',
+  'powershell',
+  'yaml',
+  'toml',
+]);
+const INDENTATION_SENSITIVE_LANGUAGES = new Set([
+  'python',
+  'ruby',
+  'shellscript',
+  'powershell',
+  'yaml',
+  'toml',
+]);
+
 export function isSupportedFile(filePath: string): boolean {
-  const ext = path.extname(filePath).toLowerCase();
-  return SUPPORTED_EXTENSIONS.has(ext);
+  return SUPPORTED_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
-/**
- * Detects the language family for appropriate AST comment stripping and compaction.
- */
+export function isSensitiveFilePath(filePath: string): boolean {
+  return /^\.env(?:\..*)?$/i.test(path.basename(filePath));
+}
+
+export function detectSensitiveContent(filePath: string, content: string): string | undefined {
+  if (isSensitiveFilePath(filePath)) {
+    return 'Environment file (.env)';
+  }
+
+  const rules: Array<[RegExp, string]> = [
+    [/\bAPI[_ -]?KEY\b/i, 'API key pattern'],
+    [/\bJWT\b/i, 'JWT pattern'],
+    [/\bSECRET\b/i, 'Secret pattern'],
+    [/\bPASSWORD\b/i, 'Password pattern'],
+    [/\bPRIVATE[_ -]?KEY\b/i, 'Private key pattern'],
+    [/\b(?:mongodb(?:\+srv)?|postgres(?:ql)?)\s*:\s*\/\//i, 'Database connection string'],
+  ];
+
+  for (const [pattern, description] of rules) {
+    if (pattern.test(content)) {
+      return description;
+    }
+  }
+
+  return undefined;
+}
+
 export function detectLanguage(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase();
-  switch (ext) {
-    case '.ts':
-      return 'typescript';
-    case '.tsx':
-      return 'typescriptreact';
-    case '.js':
-      return 'javascript';
-    case '.dart':
-      return 'dart';
-    case '.sol':
-      return 'solidity';
-    case '.json':
-      return 'json';
-    case '.md':
-      return 'markdown';
-    default:
-      return 'plaintext';
-  }
+  return LANGUAGE_BY_EXTENSION[path.extname(filePath).toLowerCase()] ?? 'plaintext';
 }
 
-/**
- * Computes an estimated token count (~4 characters per token).
- */
 export function estimateTokens(text: string): number {
-  if (!text || text.length === 0) {
-    return 0;
-  }
-  return Math.ceil(text.length / 4);
+  return text.length === 0 ? 0 : Math.ceil(text.length / 4);
 }
 
-/**
- * Strips comments from C-style and similar syntax (JS, TS, Dart, Solidity),
- * safely preserving string literals ('...', "...", `...`).
- */
-function stripCStyleComments(content: string): string {
+function stripComments(content: string, language: string): string {
+  if (language === 'markdown' || language === 'mdx') {
+    return content.replace(/<!--[\s\S]*?-->/g, '');
+  }
+
+  const htmlComments = ['html', 'xml', 'vue', 'svelte'].includes(language);
+  const hashComments = HASH_COMMENT_LANGUAGES.has(language);
+  const lineCommentMarkers =
+    language === 'sql'
+      ? ['--']
+      : hashComments
+        ? ['#']
+        : language === 'php'
+          ? ['//', '#']
+          : C_STYLE_LANGUAGES.has(language) || language === 'json' || language === 'jsonc'
+            ? ['//']
+            : [];
+  const hashRequiresSpace = language === 'yaml' || language === 'toml';
+  const hasLineComments =
+    lineCommentMarkers.length > 0;
+  const hasCStyleComments =
+    C_STYLE_LANGUAGES.has(language) || language === 'json' || language === 'jsonc' || language === 'sql';
   let result = '';
   let i = 0;
-  const len = content.length;
 
-  while (i < len) {
+  while (i < content.length) {
     const char = content[i];
-    const nextChar = i + 1 < len ? content[i + 1] : '';
+    const next = content[i + 1] ?? '';
 
-    // Handle single-line strings '...'
-    if (char === "'") {
-      result += char;
-      i++;
-      while (i < len) {
-        const c = content[i];
-        result += c;
-        if (c === '\\' && i + 1 < len) {
-          result += content[i + 1];
-          i += 2;
-          continue;
-        }
-        if (c === "'") {
-          i++;
-          break;
-        }
-        i++;
+    if (language === 'rust' && char === 'r') {
+      const rawStringStart = /^(?:br|r)(#{0,255})"/.exec(content.slice(i));
+      if (rawStringStart) {
+        const ending = `"${rawStringStart[1]}`;
+        const end = content.indexOf(ending, i + rawStringStart[0].length);
+        const endIndex = end === -1 ? content.length : end + ending.length;
+        result += content.slice(i, endIndex);
+        i = endIndex;
+        continue;
       }
-      continue;
     }
 
-    // Handle double-line strings "..."
-    if (char === '"') {
-      result += char;
-      i++;
-      while (i < len) {
-        const c = content[i];
-        result += c;
-        if (c === '\\' && i + 1 < len) {
-          result += content[i + 1];
-          i += 2;
-          continue;
-        }
-        if (c === '"') {
-          i++;
-          break;
-        }
-        i++;
-      }
-      continue;
-    }
-
-    // Handle template literals `...`
-    if (char === '`') {
-      result += char;
-      i++;
-      while (i < len) {
-        const c = content[i];
-        result += c;
-        if (c === '\\' && i + 1 < len) {
-          result += content[i + 1];
-          i += 2;
-          continue;
-        }
-        if (c === '`') {
-          i++;
-          break;
-        }
-        i++;
-      }
-      continue;
-    }
-
-    // Handle single-line comment //
-    if (char === '/' && nextChar === '/') {
+    if (language === 'csharp' && char === '@' && next === '"') {
+      result += '@"';
       i += 2;
-      while (i < len && content[i] !== '\n' && content[i] !== '\r') {
+      while (i < content.length) {
+        if (content.startsWith('""', i)) {
+          result += '""';
+          i += 2;
+          continue;
+        }
+        result += content[i];
+        if (content[i] === '"') {
+          i++;
+          break;
+        }
         i++;
       }
       continue;
     }
 
-    // Handle multi-line comment /* ... */
-    if (char === '/' && nextChar === '*') {
-      i += 2;
-      while (i < len && !(content[i] === '*' && i + 1 < len && content[i + 1] === '/')) {
+    if (htmlComments && content.startsWith('<!--', i)) {
+      const end = content.indexOf('-->', i + 4);
+      if (end === -1) {
+        break;
+      }
+      const comment = content.slice(i, end + 3);
+      result += '\n'.repeat((comment.match(/\n/g) ?? []).length);
+      i = end + 3;
+      continue;
+    }
+
+    if (
+      hasCStyleComments &&
+      char === '/' &&
+      next === '*'
+    ) {
+      const end = content.indexOf('*/', i + 2);
+      if (end === -1) {
+        break;
+      }
+      const comment = content.slice(i, end + 2);
+      result += '\n'.repeat((comment.match(/\n/g) ?? []).length);
+      i = end + 2;
+      continue;
+    }
+
+    const activeLineComment = lineCommentMarkers.find((marker) => content.startsWith(marker, i));
+    if (
+      hasLineComments &&
+      activeLineComment &&
+      (activeLineComment !== '#' ||
+        !hashRequiresSpace ||
+        i === 0 ||
+        /\s/.test(content[i - 1]))
+    ) {
+      while (i < content.length && content[i] !== '\n' && content[i] !== '\r') {
         i++;
       }
-      i += 2; // skip * and /
+      continue;
+    }
+
+    if (char === "'" || char === '"' || char === '`') {
+      const tripleQuoted =
+        ['python', 'ruby', 'swift', 'kotlin', 'java', 'csharp'].includes(language) &&
+        (char === "'" || char === '"') &&
+        content.startsWith(char.repeat(3), i);
+      const delimiter = tripleQuoted ? char.repeat(3) : char;
+      result += delimiter;
+      i += delimiter.length;
+
+      while (i < content.length) {
+        if (content[i] === '\\' && i + 1 < content.length) {
+          result += content.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        if (content.startsWith(delimiter, i)) {
+          result += delimiter;
+          i += delimiter.length;
+          break;
+        }
+        result += content[i];
+        i++;
+      }
       continue;
     }
 
@@ -196,38 +352,26 @@ function stripCStyleComments(content: string): string {
   return result;
 }
 
-/**
- * Optimizes structural AST representation for the code file by stripping
- * comments and collapsing redundant whitespace.
- */
 export function optimizeSource(content: string, filePath: string): OptimizationResult {
   const language = detectLanguage(filePath);
-  let processed = content;
+  let processed = stripComments(content, language);
 
-  if (['typescript', 'typescriptreact', 'javascript', 'dart', 'solidity'].includes(language)) {
-    processed = stripCStyleComments(processed);
-    // Collapse consecutive whitespace on lines while keeping code structure readable
+  if (language === 'json' || language === 'jsonc') {
+    try {
+      processed = JSON.stringify(JSON.parse(processed));
+    } catch {
+      processed = processed.replace(/\s+/g, ' ').trim();
+    }
+  } else if (language === 'markdown' || language === 'mdx' || language === 'html' || language === 'xml') {
+    processed = processed.replace(/\n{3,}/g, '\n\n').trim();
+  } else if (INDENTATION_SENSITIVE_LANGUAGES.has(language)) {
+    processed = processed.replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n');
+  } else {
     processed = processed
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
       .join('\n');
-  } else if (language === 'json') {
-    try {
-      const parsed = JSON.parse(stripCStyleComments(processed));
-      processed = JSON.stringify(parsed);
-    } catch {
-      processed = stripCStyleComments(processed)
-        .replace(/\s+/g, ' ')
-        .trim();
-    }
-  } else if (language === 'markdown') {
-    // Strip HTML comments <!-- ... --> and collapse excess whitespace
-    processed = processed.replace(/<!--[\s\S]*?-->/g, '');
-    processed = processed.replace(/\n{3,}/g, '\n\n').trim();
-  } else {
-    // Generic whitespace collapsing
-    processed = processed.replace(/\s+/g, ' ').trim();
   }
 
   const rawTokens = estimateTokens(content);
@@ -246,87 +390,74 @@ export function optimizeSource(content: string, filePath: string): OptimizationR
   };
 }
 
-/**
- * Appends a single optimization telemetry record to the JSONL stats ledger.
- */
 export function appendTelemetryRecord(record: TelemetryRecord): void {
-  try {
-    const dir = path.dirname(STATS_FILE);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.appendFileSync(STATS_FILE, JSON.stringify(record) + '\n', 'utf8');
-  } catch (error) {
-    console.error('AST Slayer: Failed to append telemetry record to stats ledger', error);
+  const dir = path.dirname(STATS_FILE);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
+  fs.appendFileSync(STATS_FILE, JSON.stringify(record) + '\n', 'utf8');
 }
 
-/**
- * Reads and aggregates the full telemetry summary from the JSONL stats ledger.
- */
-export function getStatsSummary(): TelemetrySummary {
+export function readTelemetryRecords(): TelemetryRecord[] {
   if (!fs.existsSync(STATS_FILE)) {
-    return {
-      totalOptimizations: 0,
-      totalRawTokens: 0,
-      totalOptimizedTokens: 0,
-      totalSavedTokens: 0,
-      averageReductionPct: '0.0%',
-      fileCount: 0,
-    };
+    return [];
   }
 
-  try {
-    const raw = fs.readFileSync(STATS_FILE, 'utf8');
-    const lines = raw.trim().split('\n').filter(Boolean);
-    const files = new Set<string>();
-
-    let totalRaw = 0;
-    let totalOptimized = 0;
-    let totalSaved = 0;
-
-    for (const line of lines) {
+  return fs
+    .readFileSync(STATS_FILE, 'utf8')
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .flatMap((line): TelemetryRecord[] => {
       try {
-        const item = JSON.parse(line) as TelemetryRecord;
-        totalRaw += item.rawTokens || 0;
-        totalOptimized += item.optimizedTokens || 0;
-        totalSaved += item.saved || 0;
-        if (item.file) {
-          files.add(item.file);
-        }
+        const record = JSON.parse(line) as TelemetryRecord;
+        return record && typeof record.file === 'string' && typeof record.timestamp === 'string'
+          ? [record]
+          : [];
       } catch {
-        // Skip malformed records
+        return [];
       }
-    }
-
-    const pct = totalRaw > 0 ? ((totalSaved / totalRaw) * 100).toFixed(1) + '%' : '0.0%';
-
-    return {
-      totalOptimizations: lines.length,
-      totalRawTokens: totalRaw,
-      totalOptimizedTokens: totalOptimized,
-      totalSavedTokens: totalSaved,
-      averageReductionPct: pct,
-      fileCount: files.size,
-    };
-  } catch (error) {
-    console.error('AST Slayer: Error reading telemetry stats', error);
-    return {
-      totalOptimizations: 0,
-      totalRawTokens: 0,
-      totalOptimizedTokens: 0,
-      totalSavedTokens: 0,
-      averageReductionPct: '0.0%',
-      fileCount: 0,
-    };
-  }
+    });
 }
 
-// Standalone CLI support for background inspection & debugging
+export function clearStatsLedger(): void {
+  const dir = path.dirname(STATS_FILE);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(STATS_FILE, '', 'utf8');
+}
+
+export function getStatsSummary(records = readTelemetryRecords()): TelemetrySummary {
+  const excluded = records.filter((record) => record.excluded);
+  const analyzed = records.filter((record) => !record.excluded && !record.cacheHit);
+  const cacheHits = records.filter((record) => !record.excluded && record.cacheHit);
+  const files = new Set(analyzed.map((record) => record.file));
+  const excludedFiles = new Set(excluded.map((record) => record.file));
+  const totalRaw = analyzed.reduce((sum, record) => sum + (record.rawTokens ?? 0), 0);
+  const totalOptimized = analyzed.reduce(
+    (sum, record) => sum + (record.optimizedTokens ?? 0),
+    0
+  );
+  const totalSaved = analyzed.reduce((sum, record) => sum + (record.saved ?? 0), 0);
+  const totalLookups = analyzed.length + cacheHits.length;
+
+  return {
+    totalOptimizations: analyzed.length,
+    totalRawTokens: totalRaw,
+    totalOptimizedTokens: totalOptimized,
+    totalSavedTokens: totalSaved,
+    averageReductionPct: totalRaw > 0 ? ((totalSaved / totalRaw) * 100).toFixed(1) + '%' : '0.0%',
+    fileCount: files.size,
+    cacheHitCount: cacheHits.length,
+    cacheHitPct: totalLookups > 0 ? ((cacheHits.length / totalLookups) * 100).toFixed(1) + '%' : '0.0%',
+    excludedFiles: excludedFiles.size,
+  };
+}
+
 if (process.argv[1] && (process.argv[1].endsWith('index.js') || process.argv[1].endsWith('index.ts'))) {
   if (process.argv.includes('--stats')) {
     const summary = getStatsSummary();
-    console.log('=== AST Slayer Telemetry Summary ===');
+    console.log('=== AST Token Slayer Telemetry Summary ===');
     console.log(`Total Optimizations: ${summary.totalOptimizations}`);
     console.log(`Unique Files Monitored: ${summary.fileCount}`);
     console.log(`Raw Tokens Processed: ${summary.totalRawTokens.toLocaleString()}`);

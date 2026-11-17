@@ -9,3 +9,5 @@ package-lock.json
 *.log
 .gitignore
 rules/**
+icon.svg
+ARCHITECTURE.md
